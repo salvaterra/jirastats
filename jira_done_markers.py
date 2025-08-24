@@ -132,25 +132,20 @@ class JiraClient:
         return issues
 
     def iter_issue_changelog(self, issue_id: str, page_size: int = 100) -> Iterable[dict]:
-        start_at = 0
-        while True:
-            params = {"startAt": start_at, "maxResults": page_size}
-            try:
-                resp = self._get(f"/rest/api/3/issue/{issue_id}/changelog", params=params)
-            except requests.HTTPError as e:  # type: ignore[attr-defined]
-                if getattr(e, "response", None) is not None and e.response.status_code == 404:
-                    resp = self._get(f"/rest/api/2/issue/{issue_id}/changelog", params=params)
-                else:
-                    raise
-            data = resp.json()
-            values = data.get("values", [])
-            if not values:
-                break
-            for history in values:
-                yield history
-            start_at += len(values)
-            if start_at >= data.get("total", 0):
-                break
+        # Fetch changelog via issue expand instead of the /changelog endpoint
+        params = {"expand": "changelog"}
+        try:
+            resp = self._get(f"/rest/api/3/issue/{issue_id}", params=params)
+        except requests.HTTPError as e:  # type: ignore[attr-defined]
+            if getattr(e, "response", None) is not None and e.response.status_code == 404:
+                resp = self._get(f"/rest/api/2/issue/{issue_id}", params=params)
+            else:
+                raise
+        data = resp.json()
+        changelog = data.get("changelog") or {}
+        histories = changelog.get("histories", [])
+        for history in histories:
+            yield history
 
 
 def find_last_transition_to_status(
@@ -168,16 +163,15 @@ def find_last_transition_to_status(
     for history in histories:
         items = history.get("items", [])
         for item in items:
-            if item.get("field") == "status":
-                to_string = (item.get("toString") or "").lower()
-                if to_string == target_lower:
-                    created = history.get("created") or ""
-                    author = history.get("author", {}) or {}
-                    display_name = author.get("displayName") or author.get("name") or ""
-                    account_id = author.get("accountId") or author.get("key") or ""
-                    if best_created is None or created > best_created:
-                        best_created = created
-                        best = (display_name, account_id, created)
+            to_string = (item.get("toString") or "").lower()
+            if to_string == target_lower:
+                created = history.get("created") or ""
+                author = history.get("author", {}) or {}
+                display_name = author.get("displayName") or author.get("name") or ""
+                account_id = author.get("accountId") or author.get("key") or ""
+                if best_created is None or created > best_created:
+                    best_created = created
+                    best = (display_name, account_id, created)
 
     return best
 
