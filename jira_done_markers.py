@@ -258,7 +258,7 @@ def parse_jira_datetime(ts: str) -> Optional[datetime]:
     return None
 
 
-def aggregate_daily_counts(rows: List[dict], date_format: str) -> Tuple[List[dict], List[str]]:
+def aggregate_daily_counts(rows: List[dict], date_format: str, include_weekends: bool) -> Tuple[List[dict], List[str]]:
     # Collect unique users and per-date counts
     user_set: set[str] = set()
     dated_rows: List[Tuple[date, str]] = []
@@ -283,11 +283,14 @@ def aggregate_daily_counts(rows: List[dict], date_format: str) -> Tuple[List[dic
     day = min_day
     counts_by_day: Dict[date, Dict[str, int]] = {}
     while day <= max_day:
-        counts_by_day[day] = {u: 0 for u in users}
+        if include_weekends or day.weekday() < 5:
+            counts_by_day[day] = {u: 0 for u in users}
         day += timedelta(days=1)
 
     # Fill counts
     for d, user in dated_rows:
+        if not include_weekends and d.weekday() >= 5:
+            continue
         if user in counts_by_day.get(d, {}):
             counts_by_day[d][user] += 1
 
@@ -395,6 +398,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default="%b-%d",
         help="Date format for aggregated output (default: %b-%d, e.g., Aug-23)",
     )
+    parser.add_argument(
+        "--include-weekends",
+        action="store_true",
+        help="Include weekends in daily aggregation (default: exclude weekends)",
+    )
     return parser.parse_args(argv)
 
 
@@ -430,7 +438,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     rows = collect_done_markers(client, issues, status_name=args.status_name, concurrency=args.concurrency)
     if args.aggregate == "daily":
-        count_rows, users = aggregate_daily_counts(rows, args.date_format)
+        count_rows, users = aggregate_daily_counts(rows, args.date_format, include_weekends=args.include_weekends)
         output_daily_counts(count_rows, users, args.output)
     else:
         output_results(rows, args.output)
