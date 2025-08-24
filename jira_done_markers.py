@@ -131,15 +131,15 @@ class JiraClient:
             start_at += len(batch)
         return issues
 
-    def iter_issue_changelog(self, issue_key: str, page_size: int = 100) -> Iterable[dict]:
+    def iter_issue_changelog(self, issue_id: str, page_size: int = 100) -> Iterable[dict]:
         start_at = 0
         while True:
             params = {"startAt": start_at, "maxResults": page_size}
             try:
-                resp = self._get(f"/rest/api/3/issue/{issue_key}/changelog", params=params)
+                resp = self._get(f"/rest/api/3/issue/{issue_id}/changelog", params=params)
             except requests.HTTPError as e:  # type: ignore[attr-defined]
                 if getattr(e, "response", None) is not None and e.response.status_code == 404:
-                    resp = self._get(f"/rest/api/2/issue/{issue_key}/changelog", params=params)
+                    resp = self._get(f"/rest/api/2/issue/{issue_id}/changelog", params=params)
                 else:
                     raise
             data = resp.json()
@@ -190,9 +190,11 @@ def collect_done_markers(
 ) -> List[dict]:
     def worker(issue: dict) -> dict:
         key = issue.get("key")
+        issue_id = issue.get("id") or ""
         summary = (((issue.get("fields") or {}).get("summary")) if issue.get("fields") else None) or ""
         try:
-            histories = list(client.iter_issue_changelog(key))
+            # Jira changelog endpoint requires issue id; fall back to key if id is missing
+            histories = list(client.iter_issue_changelog(issue_id or key))
             result = find_last_transition_to_status(histories, status_name)
             if result:
                 display_name, account_id, created = result
