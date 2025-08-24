@@ -14,14 +14,18 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Set environment variables (Jira Cloud example):
+3. Set environment variables (Cookie auth recommended):
 ```bash
-export JIRA_BASE_URL="https://your-domain.atlassian.net"
-export JIRA_EMAIL="you@example.com"
-export JIRA_API_TOKEN="<token>"
+export JIRA_BASE_URL="https://your-domain.example.com"
+export JIRA_AWSALB="<awsalb_cookie_value>"
+export JIRA_JSESSIONID="<jsessionid_cookie_value>"
 ```
 
-For Jira Server/Data Center, set `JIRA_USERNAME` and `JIRA_API_TOKEN` (password or PAT).
+Alternatively, basic auth:
+```bash
+export JIRA_USERNAME="you@example.com"
+export JIRA_API_TOKEN="<token-or-password>"
+```
 
 ### Usage
 

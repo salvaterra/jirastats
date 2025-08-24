@@ -3,19 +3,19 @@
 Fetch Jira issues with status Done and determine who marked them Done
 by inspecting the issue changelog.
 
-Authentication:
-- Jira Cloud: use email + API token
-- Jira Server/DC: use username + password or personal access token as password
+Authentication options:
+- Cookie header: provide AWSALB and JSESSIONID
+- Basic auth: email/username + token/password (optional fallback)
 
 Configuration can be provided via CLI flags or environment variables:
 - JIRA_BASE_URL (e.g., https://your-domain.atlassian.net)
-- JIRA_EMAIL (for Jira Cloud) or JIRA_USERNAME
-- JIRA_API_TOKEN (or password)
+- Cookie auth: JIRA_AWSALB and JIRA_JSESSIONID
+- OR basic auth: JIRA_EMAIL (or JIRA_USERNAME) and JIRA_API_TOKEN
 
-Example:
-  export JIRA_BASE_URL="https://your-domain.atlassian.net"
-  export JIRA_EMAIL="you@example.com"
-  export JIRA_API_TOKEN="<token>"
+Examples:
+  export JIRA_BASE_URL="https://your-domain.example.com"
+  export JIRA_AWSALB="<awsalb_cookie_value>"
+  export JIRA_JSESSIONID="<jsessionid_cookie_value>"
   python jira_done_markers.py --jql "status = Done AND project = ABC ORDER BY updated DESC" --output csv
 """
 
@@ -46,8 +46,10 @@ DEFAULT_STATUS_NAME = "Done"
 @dataclass
 class JiraAuth:
     base_url: str
-    username_or_email: str
-    api_token_or_password: str
+    username_or_email: Optional[str] = None
+    api_token_or_password: Optional[str] = None
+    awsalb_cookie: Optional[str] = None
+    jsessionid_cookie: Optional[str] = None
 
 
 class JiraClient:
@@ -56,11 +58,19 @@ class JiraClient:
         self.timeout = timeout
 
         session = requests.Session()
-        session.auth = (auth.username_or_email, auth.api_token_or_password)
         session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
         })
+
+        # Prefer cookie-based auth if provided; otherwise fall back to basic auth
+        if auth.awsalb_cookie and auth.jsessionid_cookie:
+            cookie_header = f"AWSALB={auth.awsalb_cookie}; JSESSIONID={auth.jsessionid_cookie}"
+            session.headers["Cookie"] = cookie_header
+        elif auth.username_or_email and auth.api_token_or_password:
+            session.auth = (auth.username_or_email, auth.api_token_or_password)
+        else:
+            raise ValueError("Missing authentication: provide AWSALB+JSESSIONID cookies or username/token")
 
         # Robust retry policy including 429
         retry = Retry(
@@ -247,6 +257,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=os.environ.get("JIRA_BASE_URL", ""),
         help="Jira base URL, e.g., https://your-domain.atlassian.net (env: JIRA_BASE_URL)",
     )
+    # Cookie authentication
+    parser.add_argument(
+        "--awsalb",
+        default=os.environ.get("JIRA_AWSALB", ""),
+        help="AWSALB cookie value (env: JIRA_AWSALB)",
+    )
+    parser.add_argument(
+        "--jsessionid",
+        default=os.environ.get("JIRA_JSESSIONID", ""),
+        help="JSESSIONID cookie value (env: JIRA_JSESSIONID)",
+    )
+    # Basic authentication (fallback)
     parser.add_argument(
         "--username",
         default=os.environ.get("JIRA_USERNAME", os.environ.get("JIRA_EMAIL", "")),
@@ -297,17 +319,25 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
 
-    if not args.base_url or not args.username or not args.token:
+    if not args.base_url:
+        print("Missing --base-url or JIRA_BASE_URL", file=sys.stderr)
+        return 2
+
+    have_cookies = bool(args.awsalb and args.jsessionid)
+    have_basic = bool(args.username and args.token)
+    if not (have_cookies or have_basic):
         print(
-            "Missing Jira configuration. Provide --base-url, --username, --token or set env vars JIRA_BASE_URL, JIRA_EMAIL/JIRA_USERNAME, JIRA_API_TOKEN",
+            "Missing authentication. Provide --awsalb and --jsessionid (preferred) or --username and --token.",
             file=sys.stderr,
         )
         return 2
 
     auth = JiraAuth(
         base_url=args.base_url,
-        username_or_email=args.username,
-        api_token_or_password=args.token,
+        username_or_email=(args.username or None),
+        api_token_or_password=(args.token or None),
+        awsalb_cookie=(args.awsalb or None),
+        jsessionid_cookie=(args.jsessionid or None),
     )
     client = JiraClient(auth)
 
