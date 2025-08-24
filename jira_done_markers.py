@@ -30,6 +30,7 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
+from datetime import datetime, timedelta, date
 
 import requests
 from requests import Response, Session
@@ -246,6 +247,80 @@ def output_results(rows: List[dict], fmt: str) -> None:
         )
 
 
+def parse_jira_datetime(ts: str) -> Optional[datetime]:
+    if not ts:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(ts, fmt)
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def aggregate_daily_counts(rows: List[dict], date_format: str) -> Tuple[List[dict], List[str]]:
+    # Collect unique users and per-date counts
+    user_set: set[str] = set()
+    dated_rows: List[Tuple[date, str]] = []
+    for row in rows:
+        done_at = row.get("done_at") or ""
+        dt = parse_jira_datetime(done_at)
+        if not dt:
+            continue
+        d = dt.date()
+        user = row.get("done_by_display_name") or ""
+        user_set.add(user)
+        dated_rows.append((d, user))
+
+    users = sorted(user_set)
+    if not dated_rows:
+        return [], users
+
+    min_day = min(d for d, _ in dated_rows)
+    max_day = max(d for d, _ in dated_rows)
+
+    # Initialize zeroed grid
+    day = min_day
+    counts_by_day: Dict[date, Dict[str, int]] = {}
+    while day <= max_day:
+        counts_by_day[day] = {u: 0 for u in users}
+        day += timedelta(days=1)
+
+    # Fill counts
+    for d, user in dated_rows:
+        if user in counts_by_day.get(d, {}):
+            counts_by_day[d][user] += 1
+
+    # Build output rows with formatted date and stable user columns
+    output: List[dict] = []
+    for d in sorted(counts_by_day.keys()):
+        row = {"date": d.strftime(date_format)}
+        for u in users:
+            row[u] = counts_by_day[d].get(u, 0)
+        output.append(row)
+    return output, users
+
+
+def output_daily_counts(count_rows: List[dict], users: List[str], fmt: str) -> None:
+    if fmt == "json":
+        json.dump(count_rows, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+    if fmt == "csv":
+        fieldnames = ["date"] + users
+        writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in count_rows:
+            writer.writerow(row)
+        return
+    # pretty
+    header = ["date"] + users
+    print(" | ".join(f"{h:<20}" for h in header))
+    for row in count_rows:
+        values = [row["date"]] + [str(row[u]) for u in users]
+        print(" | ".join(f"{v:<20}" for v in values))
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Find who marked Jira issues Done using changelog")
     parser.add_argument(
@@ -309,6 +384,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default="csv",
         help="Output format (default: csv)",
     )
+    parser.add_argument(
+        "--aggregate",
+        choices=["none", "daily"],
+        default="none",
+        help="Aggregate results: none (default) or daily per-user counts",
+    )
+    parser.add_argument(
+        "--date-format",
+        default="%b-%d",
+        help="Date format for aggregated output (default: %b-%d, e.g., Aug-23)",
+    )
     return parser.parse_args(argv)
 
 
@@ -343,7 +429,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Found {len(issues)} issues. Fetching changelogs...", file=sys.stderr)
 
     rows = collect_done_markers(client, issues, status_name=args.status_name, concurrency=args.concurrency)
-    output_results(rows, args.output)
+    if args.aggregate == "daily":
+        count_rows, users = aggregate_daily_counts(rows, args.date_format)
+        output_daily_counts(count_rows, users, args.output)
+    else:
+        output_results(rows, args.output)
     return 0
 
 
